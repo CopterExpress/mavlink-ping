@@ -166,15 +166,15 @@ int main(int argc, char **argv) {
             // Help request
             case '?':
                 puts(
-                        "\nUsage:\n\tmavlink-ping [-d] [-h] [-c <count>] [-i <interval>] [-I <ip>] [-p <port>]\n"
-                        "\t <id> <comp>\n"
+                        "\nUsage:\n\tmavlink-ping [-d] [-h] [-c <count>] [-i <interval>] -I <ip> -p <port>\n"
+                        "\t\t<id> <comp>\n"
                         "Options:\n\t"
                         "-d - print debug output,\n\t"
                         "-c - number of pings to send,\n\t"
                         "-i - interval between pings,\n\t"
-                        "-h - print this help.\n\n\t"
                         "-I - UDP endpoint target IP,\n\t"
-                        "-p - UDP endpoint target port.\n\n"
+                        "-p - UDP endpoint target port,\n\t"
+                        "-h - print this help.\n\n\t"
                         "<id> - MAVLink ID,\n\t"
                         "<comp> - MAVLInk component ID.\n"
                 );
