@@ -19,7 +19,7 @@
 
 // unistd optarg externals for arguments parsing
 extern char *optarg;
-extern int optind, opterr, optopt;
+extern int optind;
 //
 
 // Volatile flag to stop application (from signal)
