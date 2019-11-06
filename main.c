@@ -138,7 +138,7 @@ int main(int argc, char **argv) {
                     return EX_USAGE;
                 }
                 break;
-            // Interval between pings
+            // Ping timeout
             case 't':
                 timeout = atof(optarg);
                 if (timeout <= 0.0f)
@@ -168,11 +168,12 @@ int main(int argc, char **argv) {
             // Help request
             case '?':
                 puts(
-                        "\nUsage:\n\tmavlink-ping [-d] [-h] [-c <count>] [-i <interval>] -I <ip> -p <port>\n"
-                        "\t\t<id> <comp>\n"
+                        "\nUsage:\n\tmavlink-ping [-d] [-h] [-c <count>] [-t <timeout>] [-i <interval>] -I <ip>"
+                        "\t\t-p <port> <id> <comp>\n"
                         "Options:\n\t"
                         "-d - print debug output,\n\t"
                         "-c - number of pings to send,\n\t"
+                        "-t - ping response timeout,\n\t"
                         "-i - interval between pings,\n\t"
                         "-I - UDP endpoint target IP,\n\t"
                         "-p - UDP endpoint target port,\n\t"
