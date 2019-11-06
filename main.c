@@ -17,6 +17,8 @@
 #include "common/mavlink.h"
 #include "common/mavlink_msg_ping.h"
 
+#define PING_LOST_FAIL  0.8f
+
 // unistd optarg externals for arguments parsing
 extern char *optarg;
 extern int optind;
@@ -502,7 +504,7 @@ int main(int argc, char **argv) {
 
     printf("--- %lu:%lu ping statistics ---\n", target_id, target_component);
     printf("%u packets transmitted, %u received, %u%% packet loss, time %u ms\n", seq + 1, ping_recieved,
-           (unsigned int)round((float)ping_lost / (float)(ping_recieved + ping_lost) * 100.0f),
+           (unsigned int)roundf((float)ping_lost / (float)(ping_recieved + ping_lost) * 100.0f),
            (unsigned int)round((double)(stop_stamp.tv_sec - start_stamp.tv_sec) * 1000 +
            (double)(stop_stamp.tv_nsec - start_stamp.tv_nsec) / 1000000.0));
 
@@ -510,5 +512,8 @@ int main(int argc, char **argv) {
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", ping_rtt_min, ping_rtt_sum / (double)ping_recieved,
                 ping_rtt_max);
 
-    return EX_OK;
+    if (count)
+        return ((float)ping_lost / (float)(ping_recieved + ping_lost) > PING_LOST_FAIL) ? EX_NOHOST : EX_OK;
+    else
+        return (ping_recieved) ? EX_OK : EX_NOHOST;
 }
