@@ -53,10 +53,10 @@ if __name__ == '__main__':
 
     try:
         while True:
-            msg = mavlink_con.recv_match(type='PING', condition='not PING.target_system and not PING.target_component',
-                                         blocking=True)
-            if args.debug:
-                print('Incoming ping request: {0}'.format(msg))
-            mavlink_con.mav.ping_send(0, msg.seq, msg.get_header().srcSystem, msg.get_header().srcComponent)
+            msg = mavlink_con.recv_match(type='PING', blocking=True)
+            if not msg.target_system and not msg.target_component:
+                if args.debug:
+                    print('Incoming ping request: {0}'.format(msg))
+                mavlink_con.mav.ping_send(0, msg.seq, msg.get_header().srcSystem, msg.get_header().srcComponent)
     except KeyboardInterrupt:
         pass
