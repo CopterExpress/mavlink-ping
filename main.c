@@ -360,6 +360,7 @@ int main(int argc, char **argv) {
         return EX_OSERR;
     }
 
+    printf("PING %lu:%lu at the endpoint %s:%lu.\n", target_id, target_component, ip, port);
     if (debug)
         printf("Main loop started\n\n");
     while (!stop_application)
@@ -503,7 +504,7 @@ int main(int argc, char **argv) {
         return EX_OSERR;
     }
 
-    printf("--- %lu:%lu ping statistics ---\n", target_id, target_component);
+    printf("\n--- %lu:%lu ping statistics ---\n", target_id, target_component);
     printf("%u packets transmitted, %u received, %u%% packet loss, time %u ms\n", seq + 1, ping_recieved,
            (unsigned int)roundf((float)ping_lost / (float)(ping_recieved + ping_lost) * 100.0f),
            (unsigned int)round((double)(stop_stamp.tv_sec - start_stamp.tv_sec) * 1000 +
