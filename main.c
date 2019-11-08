@@ -17,8 +17,6 @@
 #include "common/mavlink.h"
 #include "common/mavlink_msg_ping.h"
 
-#define PING_LOST_FAIL  0.8f
-
 // unistd optarg externals for arguments parsing
 extern char *optarg;
 extern int optind;
@@ -34,31 +32,42 @@ static void signal_handler(int signum)
     stop_application = true;
 }
 
-static uint64_t get_absolute_now() {
+static uint64_t get_mavlink_time()
+{
     struct timeval tv;
     gettimeofday(&tv,NULL);
+
     return tv.tv_sec * (uint64_t)1000000 + tv.tv_usec;
 }
 
 // Remote address
 static struct sockaddr_in remote_addr;
-static uint32_t seq;
-static int udp_socket_fd;
-static int timer_fd;
+// Ping message number in a sequence
+static uint32_t ping_seq;
 static struct itimerspec timeout_spec;
-enum {
+// Ping protocol state
+static enum {
     WAITING_RESPONSE,
     IDLE
 } state;
-static struct timespec ping_stamp;
+static struct timespec ping_request_stamp;
 
-static int send_ping()
+static int udp_socket_fd;
+static int timer_fd;
+
+/*
+ * Sends a png request.
+ * Result:
+ *  0 - success,
+ *  1 - failure.
+ */
+static int send_ping_request()
 {
     // Data write buffer
     uint8_t write_buf[MAVLINK_MAX_PACKET_LEN];
     mavlink_message_t ping_message;
 
-    mavlink_msg_ping_pack(SOURCE_MAVLINK_ID, SOURCE_MAVLINK_COMPONENT, &ping_message, get_absolute_now(), seq, 0, 0);
+    mavlink_msg_ping_pack(SOURCE_MAVLINK_ID, SOURCE_MAVLINK_COMPONENT, &ping_message, get_mavlink_time(), ping_seq, 0, 0);
     uint16_t output_size = mavlink_msg_to_send_buffer(write_buf, &ping_message);
     ssize_t ret = sendto(udp_socket_fd, &write_buf, output_size, 0, (struct sockaddr *)&remote_addr,
                  sizeof(remote_addr));
@@ -68,7 +77,7 @@ static int send_ping()
         return -1;
     }
 
-    if (clock_gettime(CLOCK_MONOTONIC, &ping_stamp) < 0)
+    if (clock_gettime(CLOCK_MONOTONIC, &ping_request_stamp) < 0)
     {
         printf("Failed to get current time: %s\n", strerror(errno));
         return -1;
@@ -76,6 +85,7 @@ static int send_ping()
 
     state = WAITING_RESPONSE;
 
+    // Reconfigure timer for a ping response timeout
     if (timerfd_settime(timer_fd, 0, &timeout_spec, NULL) < 0)
     {
         printf("Failed to start timeout timer: %s\n", strerror(errno));
@@ -104,16 +114,17 @@ int main(int argc, char **argv) {
 
     char ip[INET_ADDRSTRLEN + 1] = {'\0'};
     unsigned long port = 0;
-    unsigned long count = 0;
-    float interval = 1.0f;
-    float timeout = 1.0f;
+    unsigned long ping_count = 0;
+    double ping_interval = 1.0;
+    double ping_response_timeout = 1.0;
     unsigned long target_id;
     unsigned long target_component;
+    double lost_messages_maximum = 0.8f;
     bool debug = false;
 
     int option;
     // For every command line argument
-    while ((option = getopt(argc, argv, "dht:i:c:I:p:")) != -1)
+    while ((option = getopt(argc, argv, "dht:i:c:I:p:l:")) != -1)
         switch (option)
         {
             // Debug output
@@ -122,8 +133,8 @@ int main(int argc, char **argv) {
                 break;
             // Ping count
             case 'c':
-                count = atoi(optarg);
-                if (count <= 0.0f)
+                ping_count = atoi(optarg);
+                if (ping_count <= 0.0f)
                 {
                     printf("\nInvalid ping count: \"%s\"!\n", optarg);
                     return EX_USAGE;
@@ -131,8 +142,8 @@ int main(int argc, char **argv) {
                 break;
             // Interval between pings
             case 'i':
-                interval = atof(optarg);
-                if (interval <= 0.0f)
+                ping_interval = atof(optarg);
+                if (ping_interval <= 0.0f)
                 {
                     printf("\nInvalid interval between pings: \"%s\"!\n", optarg);
                     return EX_USAGE;
@@ -140,8 +151,8 @@ int main(int argc, char **argv) {
                 break;
             // Ping timeout
             case 't':
-                timeout = atof(optarg);
-                if (timeout <= 0.0f)
+                ping_response_timeout = atof(optarg);
+                if (ping_response_timeout <= 0.0f)
                 {
                     printf("\nInvalid ping timeout: \"%s\"!\n", optarg);
                     return EX_USAGE;
@@ -163,13 +174,21 @@ int main(int argc, char **argv) {
                     return EX_USAGE;
                 }
                 break;
+            case 'l':
+                lost_messages_maximum = atof(optarg);
+                if ((lost_messages_maximum >= 0) || (lost_messages_maximum <= 1))
+                {
+                    printf("\nInvalid lost messages maximum: \"%s\"!\n", optarg);
+                    return EX_USAGE;
+                }
+                break;
             // Help request
             case 'h':
             // Help request
             case '?':
                 puts(
-                        "\nUsage:\n\tmavlink-ping [-d] [-h] [-c <count>] [-t <timeout>] [-i <interval>] -I <ip>"
-                        "\t\t-p <port> <id> <comp>\n"
+                        "\nUsage:\n\tmavlink-ping [-d] [-h] [-c <count>] [-t <timeout>] [-i <interval>] [-l <value>]"
+                        " -I <ip> \t\t-p <port> <id> <comp>\n"
                         "Options:\n\t"
                         "-d - print debug output,\n\t"
                         "-c - number of pings to send,\n\t"
@@ -177,9 +196,10 @@ int main(int argc, char **argv) {
                         "-i - interval between pings,\n\t"
                         "-I - UDP endpoint target IP,\n\t"
                         "-p - UDP endpoint target port,\n\t"
+                        "-l - lost messages maximum,\n\t"
                         "-h - print this help.\n\n\t"
                         "<id> - MAVLink ID,\n\t"
-                        "<comp> - MAVLInk component ID.\n"
+                        "<comp> - MAVLink component ID.\n"
                 );
                 return EX_USAGE;
                 break;
@@ -200,7 +220,7 @@ int main(int argc, char **argv) {
     }
 
 
-    // Configuration file path (last position argument)
+    // Positional arguments (<id> <comp>)
     if (argc - optind == 2)
     {
         target_id = atoi(argv[optind]);
@@ -284,12 +304,13 @@ int main(int argc, char **argv) {
 
     struct itimerspec ping_interval_spec;
     memset(&ping_interval_spec, 0, sizeof(ping_interval_spec));
-    ping_interval_spec.it_value.tv_sec = (time_t)interval;
-    ping_interval_spec.it_value.tv_nsec = (time_t)((interval - ping_interval_spec.it_value.tv_sec) * 1000000000.0f);
+    ping_interval_spec.it_value.tv_sec = (time_t)ping_interval;
+    ping_interval_spec.it_value.tv_nsec =
+            (time_t)((ping_interval - ping_interval_spec.it_value.tv_sec) * 1000000000.0f);
 
     memset(&timeout_spec, 0, sizeof(timeout_spec));
-    timeout_spec.it_value.tv_sec = (time_t)timeout;
-    timeout_spec.it_value.tv_nsec = (time_t)((timeout - timeout_spec.it_value.tv_sec) * 1000000000.0f);
+    timeout_spec.it_value.tv_sec = (time_t)ping_response_timeout;
+    timeout_spec.it_value.tv_nsec = (time_t)((ping_response_timeout - timeout_spec.it_value.tv_sec) * 1000000000.0f);
 
     // Signals to block
     sigset_t mask;
@@ -316,7 +337,7 @@ int main(int argc, char **argv) {
 
     // Read fd set for select
     fd_set read_fds;
-    // We need a fd with the maximum number to make a correct select request
+    // We need fd with the maximum number to make a correct select request
     int fd_max = (udp_socket_fd > timer_fd) ? udp_socket_fd : timer_fd;
     // select fds number
     int select_fds_num;
@@ -333,16 +354,19 @@ int main(int argc, char **argv) {
     // Read data counter
     ssize_t data_read;
 
-    seq = 0;
+    // Reset ping number in sequence
+    ping_seq = 0;
+    // Reset ping protocol state
     state = IDLE;
+    // Reset metrics
     unsigned int ping_lost = 0;
     unsigned int ping_recieved = 0;
     double ping_rtt_sum = 0;
     double ping_rtt_min = INFINITY;
     double ping_rtt_max = 0;
 
-    static struct timespec start_stamp;
-    if (clock_gettime(CLOCK_MONOTONIC, &start_stamp) < 0)
+    static struct timespec ping_start_stamp;
+    if (clock_gettime(CLOCK_MONOTONIC, &ping_start_stamp) < 0)
     {
         printf("Failed to get current time: %s\n", strerror(errno));
 
@@ -352,7 +376,8 @@ int main(int argc, char **argv) {
         return EX_OSERR;
     }
 
-    if (send_ping() < 0)
+    // Initial ping request
+    if (send_ping_request() < 0)
     {
         close(timer_fd);
         close(udp_socket_fd);
@@ -414,10 +439,10 @@ int main(int argc, char **argv) {
                         (message.compid == target_component) &&
                         (mavlink_msg_ping_get_target_system(&message) == SOURCE_MAVLINK_ID) &&
                         (mavlink_msg_ping_get_target_component(&message) == SOURCE_MAVLINK_COMPONENT) &&
-                        (mavlink_msg_ping_get_seq(&message) == seq))
+                        (mavlink_msg_ping_get_seq(&message) == ping_seq))
                 {
-                    static struct timespec stamp;
-                    if (clock_gettime(CLOCK_MONOTONIC, &stamp) < 0)
+                    static struct timespec ping_response_stamp;
+                    if (clock_gettime(CLOCK_MONOTONIC, &ping_response_stamp) < 0)
                     {
                         printf("Failed to get current time: %s\n", strerror(errno));
 
@@ -427,16 +452,19 @@ int main(int argc, char **argv) {
                         return EX_OSERR;
                     }
 
-                    double ping_rtt = (double)(stamp.tv_sec - ping_stamp.tv_sec) * 1000 +
-                            (double)(stamp.tv_nsec - ping_stamp.tv_nsec) / 1000000.0;
+                    double ping_rtt = (double)(ping_response_stamp.tv_sec - ping_request_stamp.tv_sec) * 1000 +
+                                      (double)(ping_response_stamp.tv_nsec - ping_request_stamp.tv_nsec) / 1000000.0;
+
                     ping_rtt_sum += ping_rtt;
                     if (ping_rtt > ping_rtt_max)
                         ping_rtt_max = ping_rtt;
                     if (ping_rtt < ping_rtt_min)
                         ping_rtt_min = ping_rtt;
 
-                    printf("Ping response from %lu:%lu: seq=%u time=%.1f ms\n", target_id, target_component, seq,
-                           ping_rtt);
+                    printf("Ping response from %lu:%lu: seq=%u time=%.1f ms\n", target_id, target_component,
+                            ping_seq, ping_rtt);
+
+                    // Reconfigure timer for the ping interval
                     if (timerfd_settime(timer_fd, 0, &ping_interval_spec, NULL) < 0)
                     {
                         printf("Failed to start timer with ping interval: %s\n", strerror(errno));
@@ -453,7 +481,7 @@ int main(int argc, char **argv) {
             }
         }
 
-        // Timeout timer has fired
+        // Timer has fired
         if (FD_ISSET(timer_fd, &read_fds))
         {
             // Read the data to reset timer event
@@ -481,10 +509,12 @@ int main(int argc, char **argv) {
                     break;
             }
 
-            if (count && ((seq + 1) >= count))
+            if (ping_count && ((ping_seq + 1) >= ping_count))
                 break;
-            seq++;
-            if (send_ping() < 0)
+
+            // HINT: Keep increment here to simplify metrics calculation
+            ping_seq++;
+            if (send_ping_request() < 0)
             {
                 close(timer_fd);
                 close(udp_socket_fd);
@@ -497,25 +527,25 @@ int main(int argc, char **argv) {
     close(timer_fd);
     close(udp_socket_fd);
 
-    static struct timespec stop_stamp;
-    if (clock_gettime(CLOCK_MONOTONIC, &stop_stamp) < 0)
+    static struct timespec ping_stop_stamp;
+    if (clock_gettime(CLOCK_MONOTONIC, &ping_stop_stamp) < 0)
     {
         printf("Failed to get current time: %s\n", strerror(errno));
         return EX_OSERR;
     }
 
     printf("\n--- %lu:%lu ping statistics ---\n", target_id, target_component);
-    printf("%u packets transmitted, %u received, %u%% packet loss, time %u ms\n", seq + 1, ping_recieved,
+    printf("%u packets transmitted, %u received, %u%% packet loss, time %u ms\n", ping_seq + 1, ping_recieved,
            (unsigned int)roundf((float)ping_lost / (float)(ping_recieved + ping_lost) * 100.0f),
-           (unsigned int)round((double)(stop_stamp.tv_sec - start_stamp.tv_sec) * 1000 +
-           (double)(stop_stamp.tv_nsec - start_stamp.tv_nsec) / 1000000.0));
+           (unsigned int)round((double)(ping_stop_stamp.tv_sec - ping_start_stamp.tv_sec) * 1000 +
+                               (double)(ping_stop_stamp.tv_nsec - ping_start_stamp.tv_nsec) / 1000000.0));
 
     if (ping_recieved)
         printf("rtt min/avg/max = %.3f/%.3f/%.3f ms\n", ping_rtt_min, ping_rtt_sum / (double)ping_recieved,
                 ping_rtt_max);
 
-    if (count)
-        return ((float)ping_lost / (float)(ping_recieved + ping_lost) > PING_LOST_FAIL) ? EX_NOHOST : EX_OK;
+    if (ping_count)
+        return ((float)ping_lost / (float)(ping_recieved + ping_lost) > lost_messages_maximum) ? EX_NOHOST : EX_OK;
     else
         return (ping_recieved) ? EX_OK : EX_NOHOST;
 }
